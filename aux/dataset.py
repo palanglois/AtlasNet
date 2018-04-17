@@ -15,7 +15,7 @@ from utils import *
 
 
 class ShapeNet(data.Dataset):
-    def __init__(self, rootimg = "/home/thibault/ssd/data_cvpr17/ShapeNet/ShapeNetRendering", rootpc = "/home/thibault/ssd/data_cvpr17/customShapeNet" , method = 'PMA', class_choice = "chair", train = True, npoints = 2500, normal = False, balanced = False, gen_view=False, SVR=False, idx=0):
+    def __init__(self, rootimg = "/home/tdeprelle/ssd/data/customShapeNet/", rootpc = "/home/tdeprelle/ssd/data/customShapeNet/" , method = 'PMA', class_choice = "chair", train = True, npoints = 2500, normal = False, balanced = False, gen_view=False, SVR=False, idx=0):
         self.balanced = balanced
         self.normal = normal
         self.train = train
@@ -24,7 +24,7 @@ class ShapeNet(data.Dataset):
         self.rootpc = rootpc
         self.npoints = npoints
         self.datapath = []
-        self.catfile = os.path.join(self.rootimg, '../synsetoffset2category.txt')
+        self.catfile = '/home/tdeprelle/code/AtlasNet/data/synsetoffset2category.txt'
         self.cat = {}
         self.meta = {}
         self.SVR = SVR
@@ -39,7 +39,7 @@ class ShapeNet(data.Dataset):
         print(self.cat)
         empty = []
         for item in self.cat:
-            dir_img  = os.path.join(self.rootimg, self.cat[item])
+            dir_img  = os.path.join(self.rootpc, self.cat[item]) + "/ply/"
             fns_img = sorted(os.listdir(dir_img))
 
             try:
@@ -47,7 +47,7 @@ class ShapeNet(data.Dataset):
                 fns_pc = sorted(os.listdir(dir_point))
             except:
                 fns_pc = []
-            fns = [val for val in fns_img if val + '.points.ply' in fns_pc]
+            fns = [val for val in fns_img if val[-4:]==".ply"]
             print('category ', self.cat[item], 'files ' + str(len(fns)), len(fns)/float(len(fns_img)), "%"),
             if train:
                 fns = fns[:int(len(fns) * 0.8)]
@@ -59,7 +59,7 @@ class ShapeNet(data.Dataset):
                 self.meta[item] = []
                 for fn in fns:
                     objpath = "/home/thibault/Downloads/data/ssd/ShapeNetCorev2/" +  self.cat[item] + "/" + fn + "/models/model_normalized.ply"
-                    self.meta[item].append( ( os.path.join(dir_img, fn, "rendering"), os.path.join(dir_point, fn + '.points.ply'), item, objpath, fn ) )
+                    self.meta[item].append( ( os.path.join(dir_img, fn, "rendering"), os.path.join(dir_point, fn ), item, objpath, fn ) )
             else:
                 empty.append(item)
         for item in empty:

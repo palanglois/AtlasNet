@@ -28,6 +28,7 @@ import time, datetime
 import visdom
 
 sys.path.append("./nndistance/")
+
 from modules.nnd import NNDModule
 distChamfer =  NNDModule()
 
@@ -46,7 +47,7 @@ opt = parser.parse_args()
 print (opt)
 
 #Launch visdom for visualization
-vis = visdom.Visdom(port = 8888, env=opt.env)
+vis = visdom.Visdom(port = 8097, env=opt.env)
 now = datetime.datetime.now()
 save_path = now.isoformat()
 dir_name =  os.path.join('log', save_path)
