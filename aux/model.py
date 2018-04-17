@@ -136,9 +136,12 @@ class PointNetfeatNormal(nn.Module):
 import resnet
 
 class PointGenCon(nn.Module):
+    #decode the output of the MLPs
+
     def __init__(self, bottleneck_size = 2500):
         self.bottleneck_size = bottleneck_size
         super(PointGenCon, self).__init__()
+          
         self.conv1 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size, 1)
         self.conv2 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size/2, 1)
         self.conv3 = torch.nn.Conv1d(self.bottleneck_size/2, self.bottleneck_size/4, 1)
@@ -150,14 +153,89 @@ class PointGenCon(nn.Module):
         self.bn3 = torch.nn.BatchNorm1d(self.bottleneck_size/4)
 
     def forward(self, x):
+                
         batchsize = x.size()[0]
-        # print(x.size())
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
         x = self.th(self.conv4(x))
-        return x
 
+        return x
+    
+class VLtoRotBias(nn.Module):
+    #decode the output of the MLPs
+
+    def __init__(self, bottleneck_size = 2500):
+        
+        self.bottleneck_size = bottleneck_size
+        super(VLtoRotBias, self).__init__()
+          
+        #conv layers : 
+        #----------------------------------------------------------------------------
+        self.conv1 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size, 1)
+        self.conv2 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size/2, 1)
+        self.conv3 = torch.nn.Conv1d(self.bottleneck_size/2, self.bottleneck_size/4, 1)
+        self.conv4 = torch.nn.Conv1d(self.bottleneck_size/4, 12, 1)
+        #----------------------------------------------------------------------------
+
+        #tanh layer
+        #----------------------------------------------------------------------------
+        self.th = nn.Tanh()
+        #----------------------------------------------------------------------------
+
+        #batch norm
+        #----------------------------------------------------------------------------
+        self.bn1 = torch.nn.BatchNorm1d(self.bottleneck_size)
+        self.bn2 = torch.nn.BatchNorm1d(self.bottleneck_size/2)
+        self.bn3 = torch.nn.BatchNorm1d(self.bottleneck_size/4)
+        #----------------------------------------------------------------------------
+
+
+    def forward(self, x):
+                
+        # V.L. -> V.L./2 -> V.L./4 -> V.L./12
+        #----------------------------------------------------------------------------
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = self.th(self.conv4(x))
+        #----------------------------------------------------------------------------
+        
+        return x
+    
+class PlanToSurface(nn.Module):
+    #decode the output of the MLPs
+
+    def __init__(self, plan_dim = 2):
+        
+        self.plan_dim = plan_dim
+        super(PlanToSurface, self).__init__()
+          
+        #conv layers : 
+        #----------------------------------------------------------------------------
+        self.conv1 = torch.nn.Conv1d(self.plan_dim, 20, 1)
+        self.conv2 = torch.nn.Conv1d(20, 20, 1)
+        self.conv3 = torch.nn.Conv1d(20, 3, 1)
+        #----------------------------------------------------------------------------
+
+        #batch norm
+        #----------------------------------------------------------------------------
+        self.bn20 = torch.nn.BatchNorm1d(20)
+        self.bn3  = torch.nn.BatchNorm1d(3)
+        #----------------------------------------------------------------------------
+
+
+    def forward(self, x):
+                
+        # 2D -> 20 -> 20 -> 3D
+        #----------------------------------------------------------------------------
+        x = F.relu(self.bn20(self.conv1(x)))
+        x = F.relu(self.bn20(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        #----------------------------------------------------------------------------
+        
+        return x
+    
 class SVR_AtlasNet(nn.Module):
     def __init__(self, num_points = 2048, bottleneck_size = 1024, nb_primitives = 5, pretrained_encoder = False, cuda=True):
         super(SVR_AtlasNet, self).__init__()
@@ -223,27 +301,101 @@ class SVR_AtlasNet(nn.Module):
 class AE_AtlasNet(nn.Module):
     def __init__(self, num_points = 2048, bottleneck_size = 1024, nb_primitives = 1):
         super(AE_AtlasNet, self).__init__()
+
+        #number of point in the batch
+        #----------------------------------------------------------------------------
         self.num_points = num_points
+        #----------------------------------------------------------------------------
+
+        #latent vector size
+        #----------------------------------------------------------------------------
         self.bottleneck_size = bottleneck_size
+        #----------------------------------------------------------------------------
+
+        #number of primitives
+        #----------------------------------------------------------------------------
         self.nb_primitives = nb_primitives
+        #----------------------------------------------------------------------------
+
+        #encoder :
+        # 32(batch number) x 3(3Dpoint) x 2500(points per batch) -> 
+        # 32(batch number) x 1024(bottleneck_size)
+        #----------------------------------------------------------------------------
         self.encoder = nn.Sequential(
         PointNetfeat(num_points, global_feat=True, trans = False),
         nn.Linear(1024, self.bottleneck_size),
         nn.BatchNorm1d(self.bottleneck_size),
         nn.ReLU()
         )
-        self.decoder = nn.ModuleList([PointGenCon(bottleneck_size = 2 +self.bottleneck_size) for i in range(0,self.nb_primitives)])
+        #----------------------------------------------------------------------------
 
+        #decoder using one MLP L.V. + 2D -> (nn.conv + nn.batchN + nn.relu) -> 3D
+        #----------------------------------------------------------------------------        
+        self.decoder = nn.ModuleList([PointGenCon(bottleneck_size = 2 +self.bottleneck_size) for i in range(0,self.nb_primitives)])
+        #----------------------------------------------------------------------------
+
+        #MLP 2D -> (nn.conv + nn.batchN + nn.relu) -> 3D
+        #----------------------------------------------------------------------------        
+        self.pToS = nn.ModuleList([PlanToSurface(plan_dim = 2) for i in range(0,self.nb_primitives)])
+        #----------------------------------------------------------------------------
+                   
+        #MLP L.V. -> (nn.conv + nn.batchN + nn.relu) -> Bias + Matrix
+        #----------------------------------------------------------------------------        
+        self.VLtoRotBias = nn.ModuleList([VLtoRotBias(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)]) 
+        #----------------------------------------------------------------------------
 
     def forward(self, x):
-        x = self.encoder(x)
+
+        #encode the full data corresponding to the epoch
+        # 32(batch number) x 3(3Dpoint) x 2500(points per batch) -> 
+        # 32(batch number) x 1024(bottleneck_size)
+        #----------------------------------------------------------------------------
+        lv = self.encoder(x)
+        x  = lv
+        #----------------------------------------------------------------------------
+        
         outs = []
+        
         for i in range(0,self.nb_primitives):
+        
+            #create the [0,1] 2D grid corresponding the the plane primitive
+            # 32(batch number) x 2 (2D point) x 100 (batch size / nb primitives)
+            #------------------------------------------------------------------------
             rand_grid = Variable(torch.cuda.FloatTensor(x.size(0),2,self.num_points/self.nb_primitives))
             rand_grid.data.uniform_(0,1)
-            y = x.unsqueeze(2).expand(x.size(0),x.size(1), rand_grid.size(2)).contiguous()
-            y = torch.cat( (rand_grid, y), 1).contiguous()
-            outs.append(self.decoder[i](y))
+            #------------------------------------------------------------------------
+            
+            #transform the 2D plane to a surface
+            #------------------------------------------------------------------------
+            surface = self.pToS[i](rand_grid)
+            #------------------------------------------------------------------------
+            
+            #transform the L.V. to a rotation matrix & bias
+            #------------------------------------------------------------------------
+            y = lv.unsqueeze(2).contiguous() 
+            linTransfo = self.VLtoRotBias[i](y).view(32,12)
+            #------------------------------------------------------------------------
+            
+            #get the transformation matrix with the bias from linTransfo vector
+            #------------------------------------------------------------------------
+            linTransfo = linTransfo.view(32,3,4)
+            r = linTransfo.narrow(2,0,3)
+            b = linTransfo[...,-1]
+            #------------------------------------------------------------------------
+            
+            #apply the transformation matrix and the bias
+            #------------------------------------------------------------------------
+            y = surface.permute(0,2,1).contiguous()    
+            y = torch.matmul(y,r).permute(0,2,1).contiguous()
+            b = b.expand(surface.size(2),-1,-1).permute(1,2,0).contiguous()
+            zz = torch.add(y,b)
+            #------------------------------------------------------------------------
+            
+            outs.append(zz)
+
+
+            
+
         return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
 
     def forward_inference(self, x, grid):
