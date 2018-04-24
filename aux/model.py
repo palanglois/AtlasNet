@@ -141,7 +141,7 @@ class PointGenCon(nn.Module):
     def __init__(self, bottleneck_size = 2500):
         self.bottleneck_size = bottleneck_size
         super(PointGenCon, self).__init__()
-          
+
         self.conv1 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size, 1)
         self.conv2 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size/2, 1)
         self.conv3 = torch.nn.Conv1d(self.bottleneck_size/2, self.bottleneck_size/4, 1)
@@ -153,7 +153,7 @@ class PointGenCon(nn.Module):
         self.bn3 = torch.nn.BatchNorm1d(self.bottleneck_size/4)
 
     def forward(self, x):
-                
+
         batchsize = x.size()[0]
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
@@ -161,14 +161,14 @@ class PointGenCon(nn.Module):
         x = self.th(self.conv4(x))
 
         return x
-    
+
 class VLtoRotBias(nn.Module):
     def __init__(self, bottleneck_size = 2500):
-        
+
         self.bottleneck_size = bottleneck_size
         super(VLtoRotBias, self).__init__()
-          
-        #conv layers : 
+
+        #conv layers :
         #----------------------------------------------------------------------------
         self.conv1 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size, 1)
         self.conv2 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size/2, 1)
@@ -190,7 +190,7 @@ class VLtoRotBias(nn.Module):
 
 
     def forward(self, x):
-                
+
         # V.L. -> V.L./2 -> V.L./4 -> 12
         #----------------------------------------------------------------------------
         x = F.relu(self.bn1(self.conv1(x)))
@@ -198,16 +198,16 @@ class VLtoRotBias(nn.Module):
         x = F.relu(self.bn3(self.conv3(x)))
         x = self.th(self.conv4(x))
         #----------------------------------------------------------------------------
-        
+
         return x
-    
+
 class PlanToSurface(nn.Module):
     def __init__(self, plan_dim = 2):
-        
+
         self.plan_dim = plan_dim
         super(PlanToSurface, self).__init__()
-          
-        #conv layers 
+
+        #conv layers
         #----------------------------------------------------------------------------
         self.conv1 = torch.nn.Conv1d(self.plan_dim, 20, 1)
         self.conv2 = torch.nn.Conv1d(20, 20, 1)
@@ -221,20 +221,20 @@ class PlanToSurface(nn.Module):
 
 
     def forward(self, x):
-                
+
         # 2D -> 10 -> 20 -> 20 -> 10 -> 3D
         #----------------------------------------------------------------------------
         x = F.relu(self.bn20(self.conv1(x)))
         x = F.relu(self.bn20(self.conv2(x)))
         x = F.relu(self.conv3(x))
         #----------------------------------------------------------------------------
-        
+
         return x
 
 class AE_AtlasNet(nn.Module):
     def __init__(self, num_points = 2048, bottleneck_size = 1024, nb_primitives = 1):
         super(AE_AtlasNet, self).__init__()
-        
+
         self.num_points = num_points
         self.bottleneck_size = bottleneck_size
         self.nb_primitives = nb_primitives
@@ -250,10 +250,10 @@ class AE_AtlasNet(nn.Module):
         #----------------------------------------------------------------------------
 
         #decoder : (batch)x(latent vector + 2D) -> (batch)x(3D)
-        #----------------------------------------------------------------------------        
-        self.decoder = nn.ModuleList([PointGenCon(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)]) 
-        self.pToS    = nn.ModuleList([PlanToSurface(plan_dim = 2) for i in range(0,self.nb_primitives)])      
-        self.VLtoRotBias = nn.ModuleList([VLtoRotBias(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)]) 
+        #----------------------------------------------------------------------------
+        self.decoder = nn.ModuleList([PointGenCon(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)])
+       #self.pToS    = nn.ModuleList([PlanToSurface(plan_dim = 2) for i in range(0,self.nb_primitives)])
+        self.VLtoRotBias = nn.ModuleList([VLtoRotBias(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)])
         #----------------------------------------------------------------------------
 
     def forward(self, x):
@@ -262,28 +262,32 @@ class AE_AtlasNet(nn.Module):
         #----------------------------------------------------------------------------
         x = self.encoder(x)
         #----------------------------------------------------------------------------
-        
+
         outs = []
-        
+
         for i in range(0,self.nb_primitives):
-        
+
             #plan to surface
             #------------------------------------------------------------------------
             rand_grid = Variable(torch.cuda.FloatTensor(x.size(0),2,self.num_points/self.nb_primitives))
             rand_grid.data.uniform_(0,1)
-            y = self.pToS[i](rand_grid)
+
+            z_ = Variable(torch.zeros(x.size(0),1,self.num_points/self.nb_primitives).cuda())
+            y  = torch.cat((rand_grid,z_),1).contiguous()
+
+            #y = self.pToS[i](rand_grid)
             #------------------------------------------------------------------------
-            
+
             #transform the L.V. to a rotation matrix & bias
             #------------------------------------------------------------------------
             linTransfo = self.VLtoRotBias[i](x.unsqueeze(2).contiguous()).view(x.size(0),3,4)
             r = linTransfo[...,0:3]
             b = linTransfo[...,-1].expand(y.size(2),-1,-1).permute(1,2,0).contiguous()
             #------------------------------------------------------------------------
-            
+
             #apply the transformation matrix and the bias
             #------------------------------------------------------------------------
-            z = torch.add(torch.matmul(y.permute(0,2,1).contiguous(),r).permute(0,2,1).contiguous(),b)            
+            z = torch.add(torch.matmul(y.permute(0,2,1).contiguous(),r).permute(0,2,1).contiguous(),b)
             outs.append(z)
             #------------------------------------------------------------------------
 

@@ -15,7 +15,18 @@ from utils import *
 
 
 class ShapeNet(data.Dataset):
-    def __init__(self, rootimg = "/home/tdeprelle/ssd/data/customShapeNet/", rootpc = "/home/tdeprelle/ssd/data/customShapeNet/" , method = 'PMA', class_choice = "chair", train = True, npoints = 2500, normal = False, balanced = False, gen_view=False, SVR=False, idx=0):
+    def __init__(self,
+                rootimg = "/home/tdeprelle/ssd/data/customShapeNet",
+                rootpc = "/home/tdeprelle/ssd/data/customShapeNet" ,
+                method = 'PMA',
+                class_choice = "chair",
+                train = True,
+                npoints = 2500,
+                normal = False,
+                balanced = False,
+                gen_view=False,
+                SVR=False, idx=0):
+
         self.balanced = balanced
         self.normal = normal
         self.train = train
@@ -39,7 +50,7 @@ class ShapeNet(data.Dataset):
         print(self.cat)
         empty = []
         for item in self.cat:
-            dir_img  = os.path.join(self.rootpc, self.cat[item]) + "/ply/"
+            dir_img  = os.path.join(self.rootimg, self.cat[item])
             fns_img = sorted(os.listdir(dir_img))
 
             try:
@@ -47,7 +58,7 @@ class ShapeNet(data.Dataset):
                 fns_pc = sorted(os.listdir(dir_point))
             except:
                 fns_pc = []
-            fns = [val for val in fns_img if val[-4:]==".ply"]
+            fns = [val for val in fns_img if val + '.points.ply' in fns_pc]
             print('category ', self.cat[item], 'files ' + str(len(fns)), len(fns)/float(len(fns_img)), "%"),
             if train:
                 fns = fns[:int(len(fns) * 0.8)]
@@ -59,7 +70,7 @@ class ShapeNet(data.Dataset):
                 self.meta[item] = []
                 for fn in fns:
                     objpath = "/home/thibault/Downloads/data/ssd/ShapeNetCorev2/" +  self.cat[item] + "/" + fn + "/models/model_normalized.ply"
-                    self.meta[item].append( ( os.path.join(dir_img, fn, "rendering"), os.path.join(dir_point, fn ), item, objpath, fn ) )
+                    self.meta[item].append( ( os.path.join(dir_img, fn, "rendering"), os.path.join(dir_point, fn + '.points.ply'), item, objpath, fn ) )
             else:
                 empty.append(item)
         for item in empty:
@@ -119,6 +130,7 @@ class ShapeNet(data.Dataset):
                 point_set = np.loadtxt(mystring).astype(np.float32)
                 break
             except ValueError as excep:
+            else:
                 print(fn)
                 print(excep)
 
@@ -126,7 +138,6 @@ class ShapeNet(data.Dataset):
         # point_set[:,0:3] = point_set[:,0:3] - centroid
         if not self.normal:
             point_set = point_set[:,0:3]
-        else:
             point_set[:,3:6] = 0.1 * point_set[:,3:6]
         point_set = torch.from_numpy(point_set)
 
