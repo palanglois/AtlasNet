@@ -26,13 +26,12 @@ import os
 import json
 import time, datetime
 import visdom
-
 sys.path.append("./nndistance/")
-
 from modules.nnd import NNDModule
 distChamfer =  NNDModule()
 
-
+# Parsing arguments
+#------------------------------------------------------------------------------------
 parser = argparse.ArgumentParser()
 parser.add_argument('--batchSize', type=int, default=32, help='input batch size')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=6)
@@ -42,190 +41,201 @@ parser.add_argument('--num_points', type=int, default = 2500,  help='number of p
 parser.add_argument('--nb_primitives', type=int, default = 25,  help='number of primitives in the atlas')
 parser.add_argument('--super_points', type=int, default = 2500,  help='number of input points to pointNet, not used by default')
 parser.add_argument('--env', type=str, default ="AE_AtlasNet"   ,  help='visdom environment')
-
 opt = parser.parse_args()
-print (opt)
+#------------------------------------------------------------------------------------
 
-#Launch visdom for visualization
-vis = visdom.Visdom(port = 8097, env=opt.env)
+
+# Launch visdom for visualization
+#------------------------------------------------------------------------------------
+vis            = visdom.Visdom(port = 8097, env=opt.env)
+#------------------------------------------------------------------------------------
+
+# Setting initial parameter
+#------------------------------------------------------------------------------------
 now = datetime.datetime.now()
 save_path = now.isoformat()
-dir_name =  os.path.join('log', save_path)
+dir_name = os.path.join('log', save_path)
 if not os.path.exists(dir_name):
     os.mkdir(dir_name)
 logname = os.path.join(dir_name, 'log.txt')
-
 blue = lambda x:'\033[94m' + x + '\033[0m'
-
-opt.manualSeed = random.randint(1, 10000) # fix seed
-print("Random Seed: ", opt.manualSeed)
+opt.manualSeed = random.randint(1, 10000)
 random.seed(opt.manualSeed)
 torch.manual_seed(opt.manualSeed)
-best_val_loss = 10
+best_val_loss  = 10
+#------------------------------------------------------------------------------------
 
 
-#Create train/test dataloader
-dataset = ShapeNet( normal = False, class_choice = None, train=True)
-dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
-                                          shuffle=True, num_workers=int(opt.workers))
+# Creating train/test dataloader
+#------------------------------------------------------------------------------------
+dataset      = ShapeNet( normal = False, class_choice = None, train=True)
 dataset_test = ShapeNet( normal = False, class_choice = None, train=False)
+
+dataloader      = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
+                                          shuffle=None, num_workers=int(opt.workers))
 dataloader_test = torch.utils.data.DataLoader(dataset_test, batch_size=opt.batchSize,
                                           shuffle=False, num_workers=int(opt.workers))
+#------------------------------------------------------------------------------------
 
+print('---------- Training information -----------')
+print('Environment  : ', opt.env)
+print('Training Set : ', len(dataset.datapath), 'elements')
+print('Testing Set  : ', len(dataset_test.datapath), 'elements')
+print("Random Seed  : ", opt.manualSeed)
+print("Epoch        : ", opt.nepoch)
+print("Primitives   : ", opt.nb_primitives)
+print("Points       : ", opt.num_points)
+print("Batch size   : ", opt.batchSize)
+print('-------------------------------------------\n')      
 
-print('training set', len(dataset.datapath))
-print('testing set', len(dataset_test.datapath))
-
+# Network setting
+#------------------------------------------------------------------------------------
 cudnn.benchmark = True
-len_dataset = len(dataset)
+len_dataset     = len(dataset)
+lrate = 0.001 
+#------------------------------------------------------------------------------------
 
-#create network
+
+# Creating network
+#------------------------------------------------------------------------------------
 network = AE_AtlasNet(num_points = opt.num_points, nb_primitives = opt.nb_primitives)
-network.cuda() #put network on GPU
-
-# print(network)
-
-network.apply(weights_init) #initialization of the weight
-
+network.cuda() 
+network.apply(weights_init)
 if opt.model != '':
     network.load_state_dict(torch.load(opt.model))
     print(" Previous weight loaded ")
-
-lrate = 0.001 #learning rate
 optimizer = optim.Adam(network.parameters(), lr = lrate)
+#------------------------------------------------------------------------------------
 
-#meters to record stats on learning
+
+# meters to record stats on learning
+#------------------------------------------------------------------------------------
 train_loss = AverageValueMeter()
 val_loss = AverageValueMeter()
 with open(logname, 'a') as f: #open and append
         f.write(str(network) + '\n')
+#------------------------------------------------------------------------------------
+
 
 #initialize learning curve on visdom, and color for each primitive in visdom display
-win_curve = vis.line(
-    X = np.array( [0] ),
-    Y = np.array( [0] ),
-)
-val_curve = vis.line(
-    X = np.array( [0] ),
-    Y = np.array( [1] ),
-)
+#------------------------------------------------------------------------------------
+win_curve = vis.line(X = np.array([0]),Y = np.array([0]),)
+val_curve = vis.line(X = np.array([0]),Y = np.array([1]),)
 labels_generated_points = torch.Tensor(range(1, (opt.nb_primitives+1)*(opt.num_points/opt.nb_primitives)+1)).view(opt.num_points/opt.nb_primitives,(opt.nb_primitives+1)).transpose(0,1)
 labels_generated_points = (labels_generated_points)%(opt.nb_primitives+1)
 labels_generated_points = labels_generated_points.contiguous().view(-1)
-print(labels_generated_points)
+#------------------------------------------------------------------------------------
 
-#start of the learning loop
+
+
+# Learning loop
+#------------------------------------------------------------------------------------
 for epoch in range(opt.nepoch):
-    #TRAIN MODE
+
     train_loss.reset()
     network.train()
+    
+    print('---------------- Training -----------------')
+    print('[epoch:   it/maxit] - train loss\n') 
+
     for i, data in enumerate(dataloader, 0):
+        
+        
         optimizer.zero_grad()
         img, points, cat, _, _ = data
-        points = Variable(points)
-        points = points.transpose(2,1).contiguous()
-        points = points.cuda()
-        #SUPER_RESOLUTION optionally reduce the size of the points fed to PointNet
-        # points = points[:,:,:opt.super_points].contiguous()
-        #END SUPER RESOLUTION
-        pointsReconstructed  = network(points) #forward pass
-        dist1, dist2 = distChamfer(points.transpose(2,1).contiguous(), pointsReconstructed) #loss function
-        loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
+        points                 = Variable(points)
+        points                 = points.transpose(2,1).contiguous()
+        points                 = points.cuda()
+        pointsReconstructed    = network(points) 
+        dist1, dist2           = distChamfer(points.transpose(2,1).contiguous(), pointsReconstructed) #loss function
+        loss_net               = (torch.mean(dist1)) + (torch.mean(dist2))
         loss_net.backward()
-        train_loss.update(loss_net.data[0])
-        optimizer.step() #gradient update
+        train_loss.update(loss_net[0].data)
+        optimizer.step() 
+        print('[%5d: %4d/%5d] - %f ' %(epoch, i, len_dataset/32, loss_net[0].data))
 
-        # VIZUALIZE
+
+        # Visdom
+        #----------------------------------------------------------------------------
         if i%50 <= 0:
             vis.scatter(X = points.transpose(2,1).contiguous()[0].data.cpu(),
-                    win = 'REAL_TRAIN',
-                    opts = dict(
-                        title = "REAL_TRAIN",
-                        markersize = 2,
-                        ),
-                    )
+                        win = 'TRAINING_SET_INPUT',
+                        opts = dict(title = "TRAINING_SET_INPUT", markersize = 2,),)
+
             vis.scatter(X = pointsReconstructed[0].data.cpu(),
-                    Y = labels_generated_points[0:pointsReconstructed.size(1)],
-                    win = 'FAKE_TRAIN',
-                    opts = dict(
-                        title="FAKE_TRAIN",
-                        markersize=2,
-                        ),
-                    )
+                        Y = labels_generated_points[0:pointsReconstructed.size(1)],
+                        win = 'TRAINING_SET_OUTPUT',
+                        opts = dict(title="TRAINING_SET_OUTPUT",markersize=2,),)
 
-        print('[%d: %d/%d] train loss:  %f ' %(epoch, i, len_dataset/32, loss_net.data[0]))
+            if train_loss.avg != 0:
+                vis.updateTrace(
+                    X = np.array([epoch]),
+                    Y = np.log(np.array([train_loss.avg])),
+                    win = win_curve,
+                    name = 'Chamfer train')
+                #----------------------------------------------------------------------------
 
-    #UPDATE CURVES
-    if train_loss.avg != 0:
-        vis.updateTrace(
-            X = np.array([epoch]),
-            Y = np.log(np.array([train_loss.avg])),
-            win = win_curve,
-            name = 'Chamfer train'
-        )
 
-    # VALIDATION
+
+
+    # Validation
+    #--------------------------------------------------------------------------------
+    print('\n-------------- Validation -----------------')
+    print('[epoch:   it:maxit] - val loss\n') 
+    
     val_loss.reset()
     for item in dataset_test.cat:
         dataset_test.perCatValueMeter[item].reset()
+    
+    with torch.no_grad():
+        network.eval()
+        for i, data in enumerate(dataloader_test, 0):
+            img, points, cat, _ , _ = data
+            points               = Variable(points)
+            points               = points.transpose(2,1).contiguous()
+            points               = points.cuda()
+            pointsReconstructed  = network(points)
+            dist1, dist2         = distChamfer(points.transpose(2,1).contiguous(), pointsReconstructed)
+            loss_net             = (torch.mean(dist1)) + (torch.mean(dist2))
+            val_loss.update(loss_net[0].data)
+            dataset_test.perCatValueMeter[cat[0]].update(loss_net[0].data)
+            
+            print('[%5d: %4d/%5d] - %f ' %(epoch, i, len(dataset_test), loss_net.data[0]))
 
-    network.eval()
-    for i, data in enumerate(dataloader_test, 0):
-        img, points, cat, _ , _ = data
-        points = Variable(points, volatile=True)
-        points = points.transpose(2,1).contiguous()
-        points = points.cuda()
-        #SUPER_RESOLUTION
-        # points = points[:,:,:opt.super_points].contiguous()
-        #END SUPER RESOLUTION
-        pointsReconstructed  = network(points)
-        dist1, dist2 = distChamfer(points.transpose(2,1).contiguous(), pointsReconstructed)
-        loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
-        val_loss.update(loss_net.data[0])
-        dataset_test.perCatValueMeter[cat[0]].update(loss_net.data[0])
-        if i%200 ==0 :
-            vis.scatter(X = points.transpose(2,1).contiguous()[0].data.cpu(),
-                    win = 'REAL_CHAIR',
-                    opts = dict(
-                        title = "REAL_CHAIR",
-                        markersize = 2,
-                        ),
-                    )
-            vis.scatter(X = pointsReconstructed[0].data.cpu(),
-                    Y = labels_generated_points[0:pointsReconstructed.size(1)],
-                    win = 'FAKE_CHAIR',
-                    opts = dict(
-                        title = "FAKE_CHAIR",
-                        markersize = 2,
-                        ),
-                    )
-        print('[%d: %d/%d] val loss:  %f ' %(epoch, i, len(dataset_test), loss_net.data[0]))
+            if i%50 ==0 :
+                vis.scatter(X = points.transpose(2,1).contiguous()[0].data.cpu(),
+                        win = 'VALIDATION_SET_INPUT',
+                        opts = dict(title = "VALIDATION_SET_INPUT", markersize = 2,),)
+                vis.scatter(X = pointsReconstructed[0].data.cpu(),
+                        Y = labels_generated_points[0:pointsReconstructed.size(1)],
+                        win = 'VALIDATION_SET_OUTPUT',
+                        opts = dict(title = "VALIDATION_SET_OUTPUT",markersize = 2,),)
 
-    #UPDATE CURVES
-    if val_loss.avg != 0:
-        vis.updateTrace(
-            X = np.array([epoch]),
-            Y = np.log(np.array([val_loss.avg])),
-            win = val_curve,
-            name = 'Chamfer val'
-        )
+                if val_loss.avg != 0:
+                    vis.updateTrace(
+                        X = np.array([epoch]),
+                        Y = np.log(np.array([val_loss.avg])),
+                        win = val_curve,
+                        name = 'Chamfer val')
+    #--------------------------------------------------------------------------------
 
-    #dump stats in log file
+    # logging result
+    #--------------------------------------------------------------------------------
     log_table = {
-      "train_loss" : train_loss.avg,
-      "val_loss" : val_loss.avg,
-      "epoch" : epoch,
-      "lr" : lrate,
+      "train_loss"   : train_loss.avg,
+      "val_loss"     : val_loss.avg,
+      "epoch"        : epoch,
+      "lr"           : lrate,
       "super_points" : opt.super_points,
-      "bestval" : best_val_loss,
-
+      "bestval"      : best_val_loss,
     }
-    print(log_table)
+    
+    print('\n------------------- Results ------------------\n')      
     for item in dataset_test.cat:
-        print(item, dataset_test.perCatValueMeter[item].avg)
-        log_table.update({item: dataset_test.perCatValueMeter[item].avg})
-    with open(logname, 'a') as f: #open and append
-        f.write('json_stats: ' + json.dumps(log_table) + '\n')
+        print(item, dataset_test.perCatValueMeter[item].avg[0])
+   #     log_table.update({item: dataset_test.perCatValueMeter[item].avg[0]})
+   # with open(logname, 'a') as f: #open and append
+   #     f.write('json_stats: ' + json.dumps(log_table) + '\n')
 
     #save best network
     if best_val_loss > val_loss.avg:
@@ -233,3 +243,5 @@ for epoch in range(opt.nepoch):
         print('New best loss : ', best_val_loss)
         print('saving net...')
         torch.save(network.state_dict(), '%s/network.pth' % (dir_name))
+    #--------------------------------------------------------------------------------
+
