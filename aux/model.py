@@ -55,16 +55,17 @@ class STN3d(nn.Module):
 
 
 class PointNetfeat(nn.Module):
-    def __init__(self, num_points = 2500, global_feat = True, trans = False):
+    def __init__(self, num_points = 2500, global_feat = True, trans = False, bottleneck_size = 1024,):
         super(PointNetfeat, self).__init__()
         self.stn = STN3d(num_points = num_points)
         self.conv1 = torch.nn.Conv1d(3, 64, 1)
         self.conv2 = torch.nn.Conv1d(64, 128, 1)
-        self.conv3 = torch.nn.Conv1d(128, 1024, 1)
+        self.conv3 = torch.nn.Conv1d(128, bottleneck_size, 1)
 
+        self.bottleneck_size = bottleneck_size
         self.bn1 = torch.nn.BatchNorm1d(64)
         self.bn2 = torch.nn.BatchNorm1d(128)
-        self.bn3 = torch.nn.BatchNorm1d(1024)
+        self.bn3 = torch.nn.BatchNorm1d(bottleneck_size)
         self.trans = trans
 
 
@@ -83,12 +84,12 @@ class PointNetfeat(nn.Module):
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.bn3(self.conv3(x))
         x,_ = torch.max(x, 2)
-        x = x.view(-1, 1024)
+        x = x.view(-1, self.bottleneck_size)
         if self.trans:
             if self.global_feat:
                 return x, trans
             else:
-                x = x.view(-1, 1024, 1).repeat(1, 1, self.num_points)
+                x = x.view(-1, self.bottleneck_size, 1).repeat(1, 1, self.num_points)
                 return torch.cat([x, pointfeat], 1), trans
         else:
             return x
@@ -163,41 +164,43 @@ class PointGenCon(nn.Module):
         return x
 
 class VLtoRotBias(nn.Module):
-    def __init__(self, bottleneck_size = 2500):
+    def __init__(self, bottleneck_size = 2500, outsize = 9):
 
         self.bottleneck_size = bottleneck_size
+        self.outsize         = outsize
         super(VLtoRotBias, self).__init__()
 
         #conv layers :
-        #----------------------------------------------------------------------------
-        self.conv1 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size, 1)
-        self.conv2 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size/2, 1)
-        self.conv3 = torch.nn.Conv1d(self.bottleneck_size/2, self.bottleneck_size/4, 1)
-        self.conv4 = torch.nn.Conv1d(self.bottleneck_size/4, 12, 1)
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
+        self.lin = torch.nn.Conv1d(self.bottleneck_size, self.outsize, 1)
+
+        # self.conv1 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size/16, 1)
+        # self.conv2 = torch.nn.Conv1d(self.bottleneck_size/16, self.bottleneck_size/32, 1)
+        # self.conv4 = torch.nn.Conv1d(self.bottleneck_size/32, 12, 1)
+        #-----------------------------------------------------------------------
 
         #tanh layer
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
         self.th = nn.Tanh()
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
 
         #batch norm
-        #----------------------------------------------------------------------------
-        self.bn1 = torch.nn.BatchNorm1d(self.bottleneck_size)
-        self.bn2 = torch.nn.BatchNorm1d(self.bottleneck_size/2)
-        self.bn3 = torch.nn.BatchNorm1d(self.bottleneck_size/4)
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
+        self.bn1 = torch.nn.BatchNorm1d(self.bottleneck_size/16)
+        self.bn2 = torch.nn.BatchNorm1d(self.bottleneck_size/32)
+        #-----------------------------------------------------------------------
 
 
     def forward(self, x):
 
         # V.L. -> V.L./2 -> V.L./4 -> 12
-        #----------------------------------------------------------------------------
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        x = self.th(self.conv4(x))
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
+        # x = F.relu(self.bn1(self.conv1(x)))
+        # x = F.relu(self.bn2(self.conv2(x)))
+        # x = self.th(self.conv4(x))
+        # #-----------------------------------------------------------------------
+
+        x = self.th(self.lin(x))
 
         return x
 
@@ -208,26 +211,26 @@ class PlanToSurface(nn.Module):
         super(PlanToSurface, self).__init__()
 
         #conv layers
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
         self.conv1 = torch.nn.Conv1d(self.plan_dim, 20, 1)
         self.conv2 = torch.nn.Conv1d(20, 20, 1)
         self.conv3 = torch.nn.Conv1d(20, 3, 1)
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
 
         #batch norm
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
         self.bn20 = torch.nn.BatchNorm1d(20)
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
 
 
     def forward(self, x):
 
         # 2D -> 10 -> 20 -> 20 -> 10 -> 3D
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
         x = F.relu(self.bn20(self.conv1(x)))
         x = F.relu(self.bn20(self.conv2(x)))
         x = F.relu(self.conv3(x))
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
 
         return x
 
@@ -240,187 +243,59 @@ class AE_AtlasNet(nn.Module):
         self.nb_primitives = nb_primitives
 
         #encoder : 32(batch)x3(3D)x2500(points) -> 32(batch)x1024(latent vector)
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
         self.encoder = nn.Sequential(
-        PointNetfeat(num_points, global_feat=True, trans = False),
-        nn.Linear(1024, self.bottleneck_size),
-        nn.BatchNorm1d(self.bottleneck_size),
-        nn.ReLU()
+        PointNetfeat(num_points, global_feat=True, trans = False,bottleneck_size=self.bottleneck_size),
         )
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
 
         #decoder : (batch)x(latent vector + 2D) -> (batch)x(3D)
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
         self.decoder = nn.ModuleList([PointGenCon(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)])
        #self.pToS    = nn.ModuleList([PlanToSurface(plan_dim = 2) for i in range(0,self.nb_primitives)])
         self.VLtoRotBias = nn.ModuleList([VLtoRotBias(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)])
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
 
     def forward(self, x):
 
         #create the latent vector
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
         x = self.encoder(x)
-        #----------------------------------------------------------------------------
+        #-----------------------------------------------------------------------
 
         outs = []
 
         for i in range(0,self.nb_primitives):
 
-            #plan to surface
-            #------------------------------------------------------------------------
+            #plan to surface - adding a extra dimention (z=0) to the surface
+            #-------------------------------------------------------------------
             rand_grid = Variable(torch.cuda.FloatTensor(x.size(0),2,self.num_points/self.nb_primitives))
             rand_grid.data.uniform_(0,1)
+            y = rand_grid
+            # z_ = Variable(torch.zeros(x.size(0),1,self.num_points/self.nb_primitives).cuda())
 
-            z_ = Variable(torch.zeros(x.size(0),1,self.num_points/self.nb_primitives).cuda())
-            y  = torch.cat((rand_grid,z_),1).contiguous()
-
+            # y  = torch.cat((rand_grid,z_),1).contiguous()
             #y = self.pToS[i](rand_grid)
-            #------------------------------------------------------------------------
+            #-------------------------------------------------------------------
 
             #transform the L.V. to a rotation matrix & bias
-            #------------------------------------------------------------------------
-            linTransfo = self.VLtoRotBias[i](x.unsqueeze(2).contiguous()).view(x.size(0),3,4)
-            r = linTransfo[...,0:3]
-            b = linTransfo[...,-1].expand(y.size(2),-1,-1).permute(1,2,0).contiguous()
-            #------------------------------------------------------------------------
+            #-------------------------------------------------------------------
+            linTransfo = self.VLtoRotBias[i](x.unsqueeze(2).contiguous())
+            r = linTransfo[:,0:6,:].view(x.size(0),2,3).contiguous()
+            b = linTransfo[:,6:9,:].view(x.size(0),3).expand(y.size(2),-1,-1).permute(1,2,0).contiguous()
+
+            # print("rotation - ", r.data)
+            # print("bias     - ", b.data, '\n')
+            #-------------------------------------------------------------------
 
             #apply the transformation matrix and the bias
-            #------------------------------------------------------------------------
+            #-------------------------------------------------------------------
             z = torch.add(torch.matmul(y.permute(0,2,1).contiguous(),r).permute(0,2,1).contiguous(),b)
             outs.append(z)
-            #------------------------------------------------------------------------
-
-
+            #-------------------------------------------------------------------
         return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
 
-    def forward_inference(self, x, grid):
-        x = self.encoder(x)
-        outs = []
-        for i in range(0,self.nb_primitives):
-            rand_grid = Variable(torch.cuda.FloatTensor(grid[i]))
-            rand_grid = rand_grid.transpose(0,1).contiguous().unsqueeze(0)
-            rand_grid = rand_grid.expand(x.size(0),rand_grid.size(1), rand_grid.size(2)).contiguous()
-            # print(rand_grid.sizerand_grid())
-            y = x.unsqueeze(2).expand(x.size(0),x.size(1), rand_grid.size(2)).contiguous()
-            y = torch.cat( (rand_grid, y), 1).contiguous()
-            outs.append(self.decoder[i](y))
-        return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
 
-    def forward_inference_from_latent_space(self, x, grid):
-        outs = []
-        for i in range(0,self.nb_primitives):
-            rand_grid = Variable(torch.cuda.FloatTensor(grid[i]))
-            rand_grid = rand_grid.transpose(0,1).contiguous().unsqueeze(0)
-            rand_grid = rand_grid.expand(x.size(0),rand_grid.size(1), rand_grid.size(2)).contiguous()
-            # print(rand_grid.sizerand_grid())
-            y = x.unsqueeze(2).expand(x.size(0),x.size(1), rand_grid.size(2)).contiguous()
-            y = torch.cat( (rand_grid, y), 1).contiguous()
-            outs.append(self.decoder[i](y))
-        return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
-
-#TEST with spheric noise
-class AE_AtlasNet_SPHERE(nn.Module):
-    def __init__(self, num_points = 2048, bottleneck_size = 1024, nb_primitives = 1):
-        super(AE_AtlasNet_SPHERE, self).__init__()
-        self.num_points = num_points
-        self.bottleneck_size = bottleneck_size
-        self.nb_primitives = nb_primitives
-        self.encoder = nn.Sequential(
-        PointNetfeat(num_points, global_feat=True, trans = False),
-        nn.Linear(1024, self.bottleneck_size),
-        nn.BatchNorm1d(self.bottleneck_size),
-        nn.ReLU()
-        )
-        self.decoder = nn.ModuleList([PointGenCon(bottleneck_size = 3 +self.bottleneck_size) for i in range(0,self.nb_primitives)])
-
-
-    def forward(self, x):
-        x = self.encoder(x)
-        outs = []
-        for i in range(0,self.nb_primitives):
-            rand_grid = Variable(torch.cuda.FloatTensor(x.size(0),3,self.num_points/self.nb_primitives)) #sample points randomly
-            rand_grid.data.normal_(0,1)
-            rand_grid = rand_grid / torch.sqrt(torch.sum(rand_grid**2, dim=1, keepdim=True)).expand(x.size(0),3,self.num_points/self.nb_primitives)
-            #assert a number of things like norm/visdom... then copy to other functions
-            y = x.unsqueeze(2).expand(x.size(0),x.size(1), rand_grid.size(2)).contiguous()
-            y = torch.cat( (rand_grid, y), 1).contiguous()
-            outs.append(self.decoder[i](y))
-        return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
-
-    def forward_inference(self, x, grid):
-        x = self.encoder(x)
-        outs = []
-        for i in range(0,self.nb_primitives):
-            grid = grid.contiguous().unsqueeze(0)
-            grid = Variable(grid.expand(x.size(0),grid.size(1), grid.size(2)).contiguous())
-            # print(grid.sizegrid())
-            y = x.unsqueeze(2).expand(x.size(0),x.size(1), grid.size(2)).contiguous()
-            y = torch.cat( (grid, y), 1).contiguous()
-            outs.append(self.decoder[i](y))
-        return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
-
-    def forward_inference_from_latent_space(self, x, grid):
-        outs = []
-        for i in range(0,self.nb_primitives):
-            grid = grid.contiguous().unsqueeze(0)
-            grid = grid.expand(x.size(0),grid.size(1), grid.size(2)).contiguous()
-            # print(grid.sizegrid())
-            y = x.unsqueeze(2).expand(x.size(0),x.size(1), grid.size(2)).contiguous()
-            y = torch.cat( (grid, y), 1).contiguous()
-            outs.append(self.decoder[i](y))
-        return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
-
-class SVR_AtlasNet_SPHERE(nn.Module):
-    def __init__(self, num_points = 2048, bottleneck_size = 1024, nb_primitives = 1, pretrained_encoder=False):
-        super(SVR_AtlasNet_SPHERE, self).__init__()
-        self.num_points = num_points
-        self.pretrained_encoder = pretrained_encoder
-
-        self.bottleneck_size = bottleneck_size
-        self.nb_primitives = nb_primitives
-        self.encoder = resnet.resnet18(pretrained=self.pretrained_encoder, num_classes=1024)
-        self.decoder = nn.ModuleList([PointGenCon(bottleneck_size = 3 +self.bottleneck_size) for i in range(0,self.nb_primitives)])
-
-
-    def forward(self, x):
-        x = x[:,:3,:,:].contiguous()
-        x = self.encoder(x)
-        outs = []
-        for i in range(0,self.nb_primitives):
-            rand_grid = Variable(torch.cuda.FloatTensor(x.size(0),3,self.num_points/self.nb_primitives)) #sample points randomly
-            rand_grid.data.normal_(0,1)
-            rand_grid = rand_grid / torch.sqrt(torch.sum(rand_grid**2, dim=1, keepdim=True)).expand(x.size(0),3,self.num_points/self.nb_primitives)
-            #assert a number of things like norm/visdom... then copy to other functions
-            y = x.unsqueeze(2).expand(x.size(0),x.size(1), rand_grid.size(2)).contiguous()
-            y = torch.cat( (rand_grid, y), 1).contiguous()
-            outs.append(self.decoder[i](y))
-        return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
-
-    def forward_inference(self, x, grid):
-        x = x[:,:3,:,:].contiguous()
-
-        x = self.encoder(x)
-        outs = []
-        for i in range(0,self.nb_primitives):
-            grid = grid.contiguous().unsqueeze(0)
-            grid = Variable(grid.expand(x.size(0),grid.size(1), grid.size(2)).contiguous())
-            # print(grid.sizegrid())
-            y = x.unsqueeze(2).expand(x.size(0),x.size(1), grid.size(2)).contiguous()
-            y = torch.cat( (grid, y), 1).contiguous()
-            outs.append(self.decoder[i](y))
-        return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
-
-    def forward_inference_from_latent_space(self, x, grid):
-        outs = []
-        for i in range(0,self.nb_primitives):
-            grid = grid.contiguous().unsqueeze(0)
-            grid = grid.expand(x.size(0),grid.size(1), grid.size(2)).contiguous()
-            # print(grid.sizegrid())
-            y = x.unsqueeze(2).expand(x.size(0),x.size(1), grid.size(2)).contiguous()
-            y = torch.cat( (grid, y), 1).contiguous()
-            outs.append(self.decoder[i](y))
-        return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
 
 
 #BASELINE
