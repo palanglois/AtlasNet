@@ -35,12 +35,12 @@ distChamfer =  NNDModule()
 parser = argparse.ArgumentParser()
 parser.add_argument('--batchSize', type=int, default=32, help='input batch size')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=6)
-parser.add_argument('--nepoch', type=int, default=50, help='number of epochs to train for')
+parser.add_argument('--nepoch', type=int, default=200, help='number of epochs to train for')
 parser.add_argument('--model', type=str, default = '',  help='optional reload model path')
 parser.add_argument('--num_points', type=int, default = 10000,  help='number of points')
-parser.add_argument('--nb_primitives', type=int, default = 25,  help='number of primitives in the atlas')
+parser.add_argument('--nb_primitives', type=int, default = 10,  help='number of primitives in the atlas')
 parser.add_argument('--super_points', type=int, default = 2500,  help='number of input points to pointNet, not used by default')
-parser.add_argument('--env', type=str, default ="AE_AtlasNet_MatBias_2D_50E_25P_1024VL_LRdecay",  help='visdom environment')
+parser.add_argument('--env', type=str, default ="3D_SGD_LRDecay",  help='visdom environment')
 opt = parser.parse_args()
 #-------------------------------------------------------------------------------
 
@@ -90,22 +90,23 @@ print('-------------------------------------------\n')
 
 # Network setting
 #-------------------------------------------------------------------------------
-cudnn.benchmark = True
-len_dataset     = len(dataset)
-lrate           = 0.001
-lr_decay        = 40
+cudnn.benchmark    = True
+len_dataset        = len(dataset)
+lrate              = 1.0
+pTos_it_activation = 90
+lr_decay           = 60
 #-------------------------------------------------------------------------------
 
 
 # Creating network
 #-------------------------------------------------------------------------------
-network = AE_AtlasNet(num_points = opt.num_points, nb_primitives = opt.nb_primitives)
+network = AE_AtlasNet(num_points = opt.num_points, nb_primitives = opt.nb_primitives, outsize = 12)
 network.cuda()
 network.apply(weights_init)
 if opt.model != '':
     network.load_state_dict(torch.load(opt.model))
     print(" Previous weight loaded ")
-optimizer = optim.Adam(network.parameters(), lr = lrate)
+optimizer = optim.SGD(network.parameters(), lr = lrate)
 #-------------------------------------------------------------------------------
 
 
@@ -131,19 +132,26 @@ labels_generated_points = labels_generated_points.contiguous().view(-1)
 
 # Learning loop
 #-------------------------------------------------------------------------------
+ppTos_active = False
 for epoch in range(opt.nepoch):
 
     train_loss.reset()
     network.train()
 
-    if(epoch == lr_decay):
-        lr = lrate/10
+    if((epoch%lr_decay == 0) and (epoch > 0)):
         for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+            param_group['lr'] = param_group['lr']/5
 
-    print('---------------- Training -----------------')
+    if epoch == pTos_it_activation:
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = param_group['lr']/5
+            ppTos_active = True
+
+    print('\n---------------- Training -----------------')
     print('[epoch:   it/maxit] - train loss\n')
-
+    for param_group in optimizer.param_groups:
+        print('lr :', param_group['lr'])
+    print("pTos_active : ", ppTos_active)
 
     for i, data in enumerate(dataloader, 0):
 
@@ -153,7 +161,7 @@ for epoch in range(opt.nepoch):
         points                 = Variable(points)
         points                 = points.transpose(2,1).contiguous()
         points                 = points.cuda()
-        pointsReconstructed    = network(points)
+        pointsReconstructed    = network(x=points,pTos_active = ppTos_active)
         dist1, dist2           = distChamfer(points.transpose(2,1).contiguous(), pointsReconstructed) #loss function
         loss_net               = (torch.mean(dist1)) + (torch.mean(dist2))
         loss_net.backward()
@@ -163,7 +171,7 @@ for epoch in range(opt.nepoch):
 
         # Visdom
         #-----------------------------------------------------------------------
-        if (i==27):
+        if (i==50):
             vis.scatter(X = points.transpose(2,1).contiguous()[0].data.cpu(),
                         win = 'TRAINING_SET_INPUT',
                         opts = dict(title = "TRAINING_SET_INPUT", markersize = 2,),)
@@ -212,7 +220,7 @@ for epoch in range(opt.nepoch):
             points               = Variable(points)
             points               = points.transpose(2,1).contiguous()
             points               = points.cuda()
-            pointsReconstructed  = network(points)
+            pointsReconstructed  = network(x = points, pTos_active = ppTos_active)
             dist1, dist2         = distChamfer(points.transpose(2,1).contiguous(), pointsReconstructed)
             loss_net             = (torch.mean(dist1)) + (torch.mean(dist2))
             val_loss.update(loss_net[0].data)
@@ -220,7 +228,7 @@ for epoch in range(opt.nepoch):
 
             print('[%5d: %4d/%5d] - %f ' %(epoch, i, len(dataset_test), loss_net.data[0]))
 
-            if i==6:
+            if i==10:
                 vis.scatter(X = points.transpose(2,1).contiguous()[0].data.cpu(),
                         win = 'VALIDATION_SET_INPUT',
                         opts = dict(title = "VALIDATION_SET_INPUT", markersize = 2,),)
@@ -257,8 +265,7 @@ for epoch in range(opt.nepoch):
       "super_points" : opt.super_points,
       "bestval"      : best_val_loss,
     }
-
-    print('\n------------------- Results ------------------\n')
+    print('\n----------------- Results -----------------')
     for item in dataset_test.cat:
         print(item, dataset_test.perCatValueMeter[item].avg[0])
    #     log_table.update({item: dataset_test.perCatValueMeter[item].avg[0]})
@@ -266,9 +273,9 @@ for epoch in range(opt.nepoch):
    #     f.write('json_stats: ' + json.dumps(log_table) + '\n')
 
     #save best network
-    if best_val_loss > val_loss.avg:
-        best_val_loss = val_loss.avg
-        print('New best loss : ', best_val_loss)
-        print('saving net...')
-        torch.save(network.state_dict(), '%s/network.pth' % (dir_name))
+    # if best_val_loss > val_loss.avg:
+    #     best_val_loss = val_loss.avg
+        # print('New best loss : ', best_val_loss)
+    print('saving net...')
+    torch.save(network.state_dict(), '%s/network.pth' % (dir_name))
     #---------------------------------------------------------------------------

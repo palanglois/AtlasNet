@@ -170,13 +170,14 @@ class VLtoRotBias(nn.Module):
         self.outsize         = outsize
         super(VLtoRotBias, self).__init__()
 
-        #conv layers :
+        #conv layers
         #-----------------------------------------------------------------------
         self.lin = torch.nn.Conv1d(self.bottleneck_size, self.outsize, 1)
+        #-----------------------------------------------------------------------
 
-        # self.conv1 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size/16, 1)
-        # self.conv2 = torch.nn.Conv1d(self.bottleneck_size/16, self.bottleneck_size/32, 1)
-        # self.conv4 = torch.nn.Conv1d(self.bottleneck_size/32, 12, 1)
+        #batch norm
+        #-----------------------------------------------------------------------
+        self.bn1 = torch.nn.BatchNorm1d(outsize)
         #-----------------------------------------------------------------------
 
         #tanh layer
@@ -184,63 +185,54 @@ class VLtoRotBias(nn.Module):
         self.th = nn.Tanh()
         #-----------------------------------------------------------------------
 
-        #batch norm
-        #-----------------------------------------------------------------------
-        self.bn1 = torch.nn.BatchNorm1d(self.bottleneck_size/16)
-        self.bn2 = torch.nn.BatchNorm1d(self.bottleneck_size/32)
-        #-----------------------------------------------------------------------
-
 
     def forward(self, x):
 
-        # V.L. -> V.L./2 -> V.L./4 -> 12
-        #-----------------------------------------------------------------------
-        # x = F.relu(self.bn1(self.conv1(x)))
-        # x = F.relu(self.bn2(self.conv2(x)))
-        # x = self.th(self.conv4(x))
-        # #-----------------------------------------------------------------------
-
-        x = self.th(self.lin(x))
+        x = self.th(self.bn1(self.lin(x)))
 
         return x
 
 class PlanToSurface(nn.Module):
-    def __init__(self, plan_dim = 2):
+    def __init__(self):
 
-        self.plan_dim = plan_dim
         super(PlanToSurface, self).__init__()
 
         #conv layers
         #-----------------------------------------------------------------------
-        self.conv1 = torch.nn.Conv1d(self.plan_dim, 20, 1)
-        self.conv2 = torch.nn.Conv1d(20, 20, 1)
-        self.conv3 = torch.nn.Conv1d(20, 3, 1)
+        self.conv1 = torch.nn.Conv1d(2, 10, 1)
+        self.conv3 = torch.nn.Conv1d(10, 3, 1)
         #-----------------------------------------------------------------------
 
-        #batch norm
+        # #batch norm
         #-----------------------------------------------------------------------
-        self.bn20 = torch.nn.BatchNorm1d(20)
+        self.bn10 = torch.nn.BatchNorm1d(10)
+        self.bn3 = torch.nn.BatchNorm1d(3)
         #-----------------------------------------------------------------------
+
+        #tanh layer
+        #-----------------------------------------------------------------------
+        self.th = nn.Tanh()
+        #-----------------------------------------------------------------------
+
 
 
     def forward(self, x):
 
-        # 2D -> 10 -> 20 -> 20 -> 10 -> 3D
         #-----------------------------------------------------------------------
-        x = F.relu(self.bn20(self.conv1(x)))
-        x = F.relu(self.bn20(self.conv2(x)))
-        x = F.relu(self.conv3(x))
+        x = F.relu(self.bn10(self.conv1(x)))
+        x = self.th(self.bn3(self.conv3(x)))
         #-----------------------------------------------------------------------
 
         return x
 
 class AE_AtlasNet(nn.Module):
-    def __init__(self, num_points = 2048, bottleneck_size = 1024, nb_primitives = 1):
+    def __init__(self, num_points = 2048, bottleneck_size = 1024, outsize=12,nb_primitives = 1):
         super(AE_AtlasNet, self).__init__()
 
-        self.num_points = num_points
+        self.num_points      = num_points
         self.bottleneck_size = bottleneck_size
-        self.nb_primitives = nb_primitives
+        self.nb_primitives   = nb_primitives
+        self.outsize         = outsize
 
         #encoder : 32(batch)x3(3D)x2500(points) -> 32(batch)x1024(latent vector)
         #-----------------------------------------------------------------------
@@ -251,12 +243,14 @@ class AE_AtlasNet(nn.Module):
 
         #decoder : (batch)x(latent vector + 2D) -> (batch)x(3D)
         #-----------------------------------------------------------------------
-        self.decoder = nn.ModuleList([PointGenCon(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)])
-       #self.pToS    = nn.ModuleList([PlanToSurface(plan_dim = 2) for i in range(0,self.nb_primitives)])
-        self.VLtoRotBias = nn.ModuleList([VLtoRotBias(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)])
+        self.decoder     = nn.ModuleList([PointGenCon(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)])
+        self.VLtoRotBias = nn.ModuleList([VLtoRotBias(bottleneck_size = self.bottleneck_size, outsize = self.outsize) for i in range(0,self.nb_primitives)])
+
+        if(self.outsize == 12):
+            self.pToS = nn.ModuleList([PlanToSurface() for i in range(0,self.nb_primitives)])
         #-----------------------------------------------------------------------
 
-    def forward(self, x):
+    def forward(self, x, pTos_active=True):
 
         #create the latent vector
         #-----------------------------------------------------------------------
@@ -271,21 +265,29 @@ class AE_AtlasNet(nn.Module):
             #-------------------------------------------------------------------
             rand_grid = Variable(torch.cuda.FloatTensor(x.size(0),2,self.num_points/self.nb_primitives))
             rand_grid.data.uniform_(0,1)
-            y = rand_grid
+            #y = rand_grid
             # z_ = Variable(torch.zeros(x.size(0),1,self.num_points/self.nb_primitives).cuda())
-
             # y  = torch.cat((rand_grid,z_),1).contiguous()
-            #y = self.pToS[i](rand_grid)
             #-------------------------------------------------------------------
 
             #transform the L.V. to a rotation matrix & bias
             #-------------------------------------------------------------------
-            linTransfo = self.VLtoRotBias[i](x.unsqueeze(2).contiguous())
-            r = linTransfo[:,0:6,:].view(x.size(0),2,3).contiguous()
-            b = linTransfo[:,6:9,:].view(x.size(0),3).expand(y.size(2),-1,-1).permute(1,2,0).contiguous()
 
-            # print("rotation - ", r.data)
-            # print("bias     - ", b.data, '\n')
+            linTransfo = self.VLtoRotBias[i](x.unsqueeze(2).contiguous())
+            if self.outsize == 9:
+                y = rand_grid
+                r = linTransfo[:,0:6,:].view(x.size(0),2,3).contiguous()
+                b = linTransfo[:,6:9,:].view(x.size(0),3).expand(y.size(2),-1,-1).permute(1,2,0).contiguous()
+
+            if self.outsize == 12:
+                if pTos_active:
+                    y = self.pToS[i](rand_grid)
+                else:
+                    z_ = Variable(torch.zeros(x.size(0),1,self.num_points/self.nb_primitives).cuda())
+                    y  = torch.cat((rand_grid,z_),1).contiguous()
+
+                r = linTransfo[:,0:9,:].view(x.size(0),3,3).contiguous()
+                b = linTransfo[:,9:12,:].view(x.size(0),3).expand(y.size(2),-1,-1).permute(1,2,0).contiguous()
             #-------------------------------------------------------------------
 
             #apply the transformation matrix and the bias

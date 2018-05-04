@@ -35,12 +35,12 @@ distChamfer =  NNDModule()
 parser = argparse.ArgumentParser()
 parser.add_argument('--batchSize', type=int, default=32, help='input batch size')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=6)
-parser.add_argument('--nepoch', type=int, default=100, help='number of epochs to train for')
+parser.add_argument('--nepoch', type=int, default=200, help='number of epochs to train for')
 parser.add_argument('--model', type=str, default = '',  help='optional reload model path')
-parser.add_argument('--num_points', type=int, default = 10000,  help='number of points')
-parser.add_argument('--nb_primitives', type=int, default = 100,  help='number of primitives in the atlas')
+parser.add_argument('--num_points', type=int, default = 2500,  help='number of points')
+parser.add_argument('--nb_primitives', type=int, default = 25,  help='number of primitives in the atlas')
 parser.add_argument('--super_points', type=int, default = 2500,  help='number of input points to pointNet, not used by default')
-parser.add_argument('--env', type=str, default ="AE_AtlasNet_MatBias_2D_25_result_9",  help='visdom environment')
+parser.add_argument('--env', type=str, default ="results_test",  help='visdom environment')
 opt = parser.parse_args()
 #-------------------------------------------------------------------------------
 
@@ -63,15 +63,15 @@ opt.manualSeed = random.randint(1, 10000)
 random.seed(opt.manualSeed)
 torch.manual_seed(opt.manualSeed)
 best_val_loss  = 10
-display = 2
-prim_display = 2
+display = 3
+prim_display = 0
 #-------------------------------------------------------------------------------
 
 
 # Creating train/test dataloader
 #-------------------------------------------------------------------------------
-dataset      = ShapeNet( normal = False, class_choice = "monitor", train=True)
-dataset_test = ShapeNet( normal = False, class_choice = "monitor", train=False)
+dataset      = ShapeNet( normal = False, class_choice = "chair", train=True)
+dataset_test = ShapeNet( normal = False, class_choice = "chair", train=False)
 
 dataloader      = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
                                           shuffle=None, num_workers=int(opt.workers))
@@ -100,7 +100,7 @@ lrate = 0.001
 
 # Creating network
 #-------------------------------------------------------------------------------
-network = AE_AtlasNet(num_points = opt.num_points, nb_primitives = opt.nb_primitives)
+network = AE_AtlasNet(num_points = opt.num_points, nb_primitives = opt.nb_primitives, outsize = 12)
 network.cuda()
 network.apply(weights_init)
 if opt.model != '':
