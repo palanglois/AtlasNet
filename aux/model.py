@@ -299,15 +299,6 @@ class AE_AtlasNet(nn.Module):
             points_per_primitive = adjust(points_per_primitive,self.num_points)
             #-------------------------------------------------------------------
 
-
-        # print("\nmean\n----------------------------------------------",mean.data,torch.sum(mean,1).view(1,x.size(0)).data)
-        # print("\nstandart deviations (",std_val,")\n----------------------------------------------",stddev.data)
-        # print("\nnormal distribution sampling\n----------------------------------------------",existance_prob_.data,torch.sum(existance_prob_,1).view(1,x.size(0)).data)
-        # print("\nnormal distribution sampling summing to one\n----------------------------------------------",existance_prob.data,torch.sum(existance_prob,1).view(1,x.size(0)).data)
-        # print("\npoints repartition\n----------------------------------------------\n",points_per_primitive)
-        # print(torch.sum(points_per_primitive,1).view(1,x.size(0)))
-
-
         #create on spatial transformation per primitive
         #-----------------------------------------------------------------------
         linear_list = []
@@ -365,8 +356,8 @@ class AE_AtlasNet(nn.Module):
                     #-----------------------------------------------------------
                 #---------------------------------------------------------------
 
-                #not     allowing the network to modify the plan before the spatial
-#               transformation (ie using simple plan)
+                #not allowing the network to modify the plan before the spatial
+                #transformation (ie using simple plan)
                 #---------------------------------------------------------------
                 else:
 
