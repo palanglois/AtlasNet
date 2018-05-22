@@ -11,8 +11,10 @@ import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from torch.autograd import Variable
+from utils import adjust
 from PIL import Image
 import numpy as np
+import sys
 import matplotlib.pyplot as plt
 import pdb
 import torch.nn.functional as F
@@ -163,139 +165,259 @@ class PointGenCon(nn.Module):
 
         return x
 
-class VLtoRotBias(nn.Module):
-    def __init__(self, bottleneck_size = 2500, outsize = 9):
 
-        self.bottleneck_size = bottleneck_size
-        self.outsize         = outsize
-        super(VLtoRotBias, self).__init__()
 
-        #conv layers
-        #-----------------------------------------------------------------------
-        self.lin = torch.nn.Conv1d(self.bottleneck_size, self.outsize, 1)
-        #-----------------------------------------------------------------------
+class rotBias(nn.Module):
+    def __init__(self, bottleneck_size = 2500, outsize = 12):
 
-        #batch norm
-        #-----------------------------------------------------------------------
-        self.bn1 = torch.nn.BatchNorm1d(outsize)
-        #-----------------------------------------------------------------------
+        super(rotBias, self).__init__()
 
-        #tanh layer
-        #-----------------------------------------------------------------------
-        self.th = nn.Tanh()
-        #-----------------------------------------------------------------------
-
+        self.lin = torch.nn.Conv1d(bottleneck_size, outsize, 1)
+        self.bn  = torch.nn.BatchNorm1d(outsize)
+        self.th  = nn.Tanh()
 
     def forward(self, x):
+        return self.th(self.bn(self.lin(x)))
 
-        x = self.th(self.bn1(self.lin(x)))
 
-        return x
 
-class PlanToSurface(nn.Module):
+class ExistanceProbability(nn.Module):
+    def __init__(self, bottleneck_size = 2500, outsize = 40):
+
+        super(ExistanceProbability, self).__init__()
+
+        self.lin = torch.nn.Conv1d(bottleneck_size, outsize, 1)
+        self.bn  = torch.nn.BatchNorm1d(outsize)
+
+    def forward(self, x):
+        return torch.nn.functional.softmax(self.bn(self.lin(x)),dim=1)
+
+
+
+class d2Tod3(nn.Module):
     def __init__(self):
 
-        super(PlanToSurface, self).__init__()
+        super(d2Tod3, self).__init__()
 
-        #conv layers
-        #-----------------------------------------------------------------------
         self.conv1 = torch.nn.Conv1d(2, 10, 1)
         self.conv3 = torch.nn.Conv1d(10, 3, 1)
-        #-----------------------------------------------------------------------
-
-        # #batch norm
-        #-----------------------------------------------------------------------
-        self.bn10 = torch.nn.BatchNorm1d(10)
-        self.bn3 = torch.nn.BatchNorm1d(3)
-        #-----------------------------------------------------------------------
-
-        #tanh layer
-        #-----------------------------------------------------------------------
-        self.th = nn.Tanh()
-        #-----------------------------------------------------------------------
-
-
+        self.bn10  = torch.nn.BatchNorm1d(10)
+        self.bn3   = torch.nn.BatchNorm1d(3)
+        self.th    = nn.Tanh()
 
     def forward(self, x):
-
-        #-----------------------------------------------------------------------
-        x = F.relu(self.bn10(self.conv1(x)))
-        x = self.th(self.bn3(self.conv3(x)))
-        #-----------------------------------------------------------------------
-
+        if(x.size(2) > 1):
+            x = F.relu(self.bn10(self.conv1(x)))
+            x = self.th(self.bn3(self.conv3(x)))
+        else:
+            x = F.relu(self.conv1(x))
+            x = self.th(self.conv3(x))
         return x
 
+
 class AE_AtlasNet(nn.Module):
-    def __init__(self, num_points = 2048, bottleneck_size = 1024, outsize=12,nb_primitives = 1):
+    def __init__(self, num_points = 2048, bottleneck_size = 1024,nb_primitives = 1,D3_is_on=True):
         super(AE_AtlasNet, self).__init__()
 
         self.num_points      = num_points
         self.bottleneck_size = bottleneck_size
         self.nb_primitives   = nb_primitives
-        self.outsize         = outsize
+        self.D3_is_on        = D3_is_on
+
+        if self.D3_is_on:
+            self.outsize = 12
+        else:
+            self.outsize = 9
 
         #encoder : 32(batch)x3(3D)x2500(points) -> 32(batch)x1024(latent vector)
         #-----------------------------------------------------------------------
         self.encoder = nn.Sequential(
-        PointNetfeat(num_points, global_feat=True, trans = False,bottleneck_size=self.bottleneck_size),
-        )
+        PointNetfeat(num_points,
+                     global_feat=True,
+                     trans = False,
+                     bottleneck_size=self.bottleneck_size),)
         #-----------------------------------------------------------------------
 
-        #decoder : (batch)x(latent vector + 2D) -> (batch)x(3D)
+        #define the different moduls used during the training
         #-----------------------------------------------------------------------
-        self.decoder     = nn.ModuleList([PointGenCon(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)])
-        self.VLtoRotBias = nn.ModuleList([VLtoRotBias(bottleneck_size = self.bottleneck_size, outsize = self.outsize) for i in range(0,self.nb_primitives)])
-
-        if(self.outsize == 12):
-            self.pToS = nn.ModuleList([PlanToSurface() for i in range(0,self.nb_primitives)])
+        self.decoder = nn.ModuleList([PointGenCon(bottleneck_size = self.bottleneck_size) for i in range(0,self.nb_primitives)])
+        self.existanceProbability = ExistanceProbability(bottleneck_size=self.bottleneck_size,outsize=self.nb_primitives)
+        self.d2Tod3  = nn.ModuleList([d2Tod3() for i in range(0,self.nb_primitives)])
+        self.rotBias = nn.ModuleList([rotBias(bottleneck_size = self.bottleneck_size, outsize = self.outsize) for i in range(0,self.nb_primitives)])
         #-----------------------------------------------------------------------
 
-    def forward(self, x, pTos_active=True):
+    def forward(self, x, std_val=0.01,constant_rep=True):
 
         #create the latent vector
         #-----------------------------------------------------------------------
         x = self.encoder(x)
         #-----------------------------------------------------------------------
 
-        outs = []
+        if constant_rep:
+            N = self.num_points/self.nb_primitives
+            ones = Variable(torch.ones(x.size(0),self.nb_primitives)).cuda()
+            points_per_primitive  = ones.contiguous() * N
+            points_per_primitive =points_per_primitive.int()
+            existance_prob = ones[1]
 
-        for i in range(0,self.nb_primitives):
-
-            #plan to surface - adding a extra dimention (z=0) to the surface
+        else :
+            #compute the means for the normal distributions
             #-------------------------------------------------------------------
-            rand_grid = Variable(torch.cuda.FloatTensor(x.size(0),2,self.num_points/self.nb_primitives))
-            rand_grid.data.uniform_(0,1)
-            #y = rand_grid
-            # z_ = Variable(torch.zeros(x.size(0),1,self.num_points/self.nb_primitives).cuda())
-            # y  = torch.cat((rand_grid,z_),1).contiguous()
-            #-------------------------------------------------------------------
-
-            #transform the L.V. to a rotation matrix & bias
+            mean = self.existanceProbability(x.unsqueeze(2))
+            mean = mean.view(x.size(0),self.nb_primitives).contiguous()
             #-------------------------------------------------------------------
 
-            linTransfo = self.VLtoRotBias[i](x.unsqueeze(2).contiguous())
-            if self.outsize == 9:
-                y = rand_grid
-                r = linTransfo[:,0:6,:].view(x.size(0),2,3).contiguous()
-                b = linTransfo[:,6:9,:].view(x.size(0),3).expand(y.size(2),-1,-1).permute(1,2,0).contiguous()
+            #fixed standart deviation for every normal distriutions
+            #-------------------------------------------------------------------
+            ones    = Variable(torch.ones(x.size(0),self.nb_primitives)).cuda()
+            stddev  = (std_val * ones).contiguous()
+            #-------------------------------------------------------------------
 
-            if self.outsize == 12:
-                if pTos_active:
-                    y = self.pToS[i](rand_grid)
+            #sample over the normal distriutions the existance probabilities and
+            #make sure they are in [0,1]
+            #-------------------------------------------------------------------
+            existance_prob = torch.normal(mean,stddev).contiguous()
+            existance_prob[existance_prob < 0] = 0
+            existance_prob[existance_prob > 1] = 1
+            # existance_prob_ = existance_prob
+            #-------------------------------------------------------------------
+
+            # normalize the probabilities for every batch
+            #-------------------------------------------------------------------
+            batch_sum_prob = torch.sum(existance_prob,1).contiguous()
+            batch_sum_prob = batch_sum_prob.expand(self.nb_primitives,x.size(0))
+            batch_sum_prob = batch_sum_prob.permute(1,0)
+            batch_sum_prob = batch_sum_prob.contiguous()
+            existance_prob = torch.div(existance_prob,batch_sum_prob)
+            existance_prob = existance_prob.contiguous()
+            #-------------------------------------------------------------------
+
+            #computing the number of points per primitives wrt the batch
+            #-------------------------------------------------------------------
+            points_per_primitive = torch.round(existance_prob*self.num_points)
+            points_per_primitive = points_per_primitive.int().contiguous()
+            points_per_primitive = adjust(points_per_primitive,self.num_points)
+            #-------------------------------------------------------------------
+
+
+        # print("\nmean\n----------------------------------------------",mean.data,torch.sum(mean,1).view(1,x.size(0)).data)
+        # print("\nstandart deviations (",std_val,")\n----------------------------------------------",stddev.data)
+        # print("\nnormal distribution sampling\n----------------------------------------------",existance_prob_.data,torch.sum(existance_prob_,1).view(1,x.size(0)).data)
+        # print("\nnormal distribution sampling summing to one\n----------------------------------------------",existance_prob.data,torch.sum(existance_prob,1).view(1,x.size(0)).data)
+        # print("\npoints repartition\n----------------------------------------------\n",points_per_primitive)
+        # print(torch.sum(points_per_primitive,1).view(1,x.size(0)))
+
+
+        #create on spatial transformation per primitive
+        #-----------------------------------------------------------------------
+        linear_list = []
+        for primitive in range(self.nb_primitives):
+            linear_list.append(self.rotBias[primitive](x.unsqueeze(2).contiguous()))
+        linear_list = torch.cat(linear_list,2)
+        #-----------------------------------------------------------------------
+
+        out_batch = []
+
+        for batch in range(x.size(0)):
+
+            out_primitive = []
+
+            for primitive in range(self.nb_primitives):
+
+                #find the number of points to generate wrt the batch and the
+                #primitive number
+                #---------------------------------------------------------------
+                N = points_per_primitive[batch,primitive].data[0]
+                #---------------------------------------------------------------
+
+                #ignore the primitive is there is no point to associated
+                #---------------------------------------------------------------
+                if (N == 0):
+                    continue
+                #---------------------------------------------------------------
+
+                #generete the 2D-primitive wrt the number of points
+                #---------------------------------------------------------------
+                rand_grid = Variable(torch.cuda.FloatTensor(1,2,N))
+                rand_grid.data.uniform_(0,1)
+                #---------------------------------------------------------------
+
+                #allowing the network to modify the plan before the spatial
+                #transformation
+                #---------------------------------------------------------------
+                if self.D3_is_on:
+
+                    #tranform the 2D primitive into a 3D surface
+                    #-----------------------------------------------------------
+                    y = self.d2Tod3[primitive](rand_grid)
+                    #-----------------------------------------------------------
+
+                    #generate the roation matrix & bias wrt the primitive
+                    #-----------------------------------------------------------
+                    linear = linear_list[batch,:,primitive]
+                    q = linear[0:9]
+                    q = q.view(3,3)
+                    q = q.contiguous()
+
+                    t = linear[9:12]
+                    t = t.view(1,3).expand(y.size(2),-1,-1).permute(1,2,0)
+                    t = t.contiguous()
+                    #-----------------------------------------------------------
+                #---------------------------------------------------------------
+
+                #not     allowing the network to modify the plan before the spatial
+#               transformation (ie using simple plan)
+                #---------------------------------------------------------------
                 else:
-                    z_ = Variable(torch.zeros(x.size(0),1,self.num_points/self.nb_primitives).cuda())
-                    y  = torch.cat((rand_grid,z_),1).contiguous()
 
-                r = linTransfo[:,0:9,:].view(x.size(0),3,3).contiguous()
-                b = linTransfo[:,9:12,:].view(x.size(0),3).expand(y.size(2),-1,-1).permute(1,2,0).contiguous()
+                    y = rand_grid
+
+                    #generate the roation matrix & bias wrt the primitive
+                    #-----------------------------------------------------------
+                    linear = linear_list[batch,:,primitive]
+                    q = linear[0:6]
+                    q = q.view(2,3)
+                    q = q.contiguous()
+
+                    t = linear[6:9]
+                    t = t.view(1,3)
+                    t = t.expand(y.size(2),-1,-1).permute(1,2,0)
+                    t = t.contiguous()
+                    #-----------------------------------------------------------
+                #---------------------------------------------------------------
+
+
+                #apply the transformation matrix and the bias
+                #---------------------------------------------------------------
+                yq  = torch.matmul(y.permute(0,2,1).contiguous(),q)
+                yq  = yq.permute(0,2,1).contiguous()
+                yqt = torch.add(yq,t)
+                #---------------------------------------------------------------
+
+                #combine all the predictions of the primitives of one sample
+                #---------------------------------------------------------------
+                out_primitive.append(yqt)
+            out_batch.append(torch.cat(out_primitive,2).contiguous())
             #-------------------------------------------------------------------
 
-            #apply the transformation matrix and the bias
-            #-------------------------------------------------------------------
-            z = torch.add(torch.matmul(y.permute(0,2,1).contiguous(),r).permute(0,2,1).contiguous(),b)
-            outs.append(z)
-            #-------------------------------------------------------------------
-        return torch.cat(outs,2).contiguous().transpose(2,1).contiguous()
+        #combine all the predictions of the sample
+        #-----------------------------------------------------------------------
+        out_batch = torch.cat(out_batch,0).contiguous()
+        #-----------------------------------------------------------------------
+
+        #configuration and its probability
+        #-----------------------------------------------------------------------
+        existance_prob[existance_prob == 0] = 1
+        configuration = out_batch.transpose(2,1).contiguous()
+
+        if constant_rep:
+            ones = Variable(torch.ones(x.size(0))).cuda().contiguous()
+            configuration_probability = ones
+        else:
+            configuration_probability = torch.prod(existance_prob,1)
+        #-----------------------------------------------------------------------
+
+        return configuration, configuration_probability, points_per_primitive
 
 
 

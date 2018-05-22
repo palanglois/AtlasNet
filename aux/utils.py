@@ -1,6 +1,9 @@
 import os
 import random
 import numpy as np
+import torch
+import visdom
+
 
 #initialize the weighs of the network for Convolutional layers and batchnorm layers
 def weights_init(m):
@@ -17,6 +20,93 @@ def adjust_learning_rate(optimizer, epoch, phase):
     if (epoch%phase==(phase-1)):
 		for param_group in optimizer.param_groups:
 			param_group['lr'] = param_group['lr']/10.
+
+def display_result(pts,config,pts_per_prim,epoch,it,vis,mode):
+    #display everything on visdom
+
+    #create the points labels
+    #---------------------------------------------------------------------------
+    label = 1
+    labels_generated_pts = torch.Tensor()
+    points_repartition = pts_per_prim[0]
+
+    for i in range(points_repartition.size(0)):
+        if(points_repartition[i] != 0):
+            ones  = torch.ones(points_repartition[i].data[0])*label
+            label = label + 1
+            labels_generated_pts = torch.cat((labels_generated_pts,ones),0)
+    #---------------------------------------------------------------------------
+
+    #display the training input/output
+    #---------------------------------------------------------------------------
+    vis.scatter(X = pts.transpose(2,1).contiguous()[0].data.cpu(),
+                win = mode+' set input',
+                opts = dict(title = mode+" set input", markersize = 2,),)
+
+    x = []
+    for i in range(pts_per_prim.size(1)):
+        n = torch.ones(points_repartition[i].data[0])*i
+        x.append(n)
+    x = torch.cat(x,0)
+
+
+    vis.histogram(X = x,
+                  win = "repartition " + mode,
+                  opts = dict(title = "repartition " + mode, markersize = 2,),)
+
+    vis.scatter(X = config[0].data.cpu(),
+                Y = labels_generated_pts,
+                win = mode+' set ouput',
+                opts = dict(title=mode+" set output",markersize=2,),)
+    #---------------------------------------------------------------------------
+
+
+    #display some primitives
+    #---------------------------------------------------------------------------
+    X       = config[0].data.cpu()
+    run     = True
+    current = 0
+    i       = 0
+    j       = 0
+
+    while(run):
+
+        points = pts_per_prim[0,i].data[0]
+        if(points !=0):
+            title = mode+" primitive "+str(j+1)
+            xX  = X[current:current+points]
+            opt = dict(title=title, markersize=2)
+            vis.scatter(xX,win = title,opts = opt)
+            j = j+1
+        i = i+1
+
+        if j ==2:
+            run = False
+    #---------------------------------------------------------------------------
+
+
+def generate_cude(h,l,w):
+    return 0
+
+
+def adjust(pts_per_prim,num_points):
+# make sure that the number of predicted points is equal in all the batch
+
+    #compute the number of points to add or substract per batch
+    #---------------------------------------------------------------------------
+    sum_batch = torch.sum(pts_per_prim,1)
+    diff = sum_batch - num_points
+    #---------------------------------------------------------------------------
+
+    #add or substract points to the biggest primitive
+    #---------------------------------------------------------------------------
+    m, index = torch.max(pts_per_prim,1)
+    for i in range(diff.size(0)):
+        new_val = pts_per_prim[i,index[i]] - diff[i]
+        pts_per_prim[i,index[i]] = new_val
+    #---------------------------------------------------------------------------
+
+    return pts_per_prim
 
 
 class AverageValueMeter(object):
