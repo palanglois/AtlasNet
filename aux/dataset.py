@@ -15,7 +15,7 @@ from utils import *
 
 
 class ShapeNet(data.Dataset):
-    def __init__(self, rootimg = "/home/tdeprelle/ssd/data/customShapeNet/", rootpc = "/home/tdeprelle/ssd/data/customShapeNet/" , method = 'PMA', class_choice = "chair", train = True, npoints = 2500, normal = False, balanced = False, gen_view=False, SVR=False, idx=0):
+    def __init__(self, rootimg = "/home/theo/Documents/AtlasNet/data/customShapeNet", rootpc = "/home/theo/Documents/AtlasNet/data/customShapeNet" , method = 'PMA', class_choice = "chair", train = True, npoints = 2500, normal = False, balanced = False, gen_view=False, SVR=False, idx=0):
         self.balanced = balanced
         self.normal = normal
         self.train = train

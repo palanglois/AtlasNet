@@ -78,6 +78,7 @@ def display_result(pts,config,pts_per_prim,epoch,it,vis,mode):
             opt = dict(title=title, markersize=2)
             vis.scatter(xX,win = title,opts = opt)
             j = j+1
+            current=current+points
         i = i+1
 
         if j ==2:

@@ -12,6 +12,7 @@ import torch.utils.data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
+import pickle
 from torch.autograd import Variable
 import sys
 sys.path.append('./aux/')
@@ -37,10 +38,10 @@ parser.add_argument('--batchSize', type=int, default=32, help='input batch size'
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=6)
 parser.add_argument('--nepoch', type=int, default=200, help='number of epochs to train for')
 parser.add_argument('--model', type=str, default = '',  help='optional reload model path')
-parser.add_argument('--num_points', type=int, default = 2000,  help='number of pts')
-parser.add_argument('--nb_primitives', type=int, default = 10,  help='number of primitives in the atlas')
+parser.add_argument('--num_points', type=int, default = 25000,  help='number of pts')
+parser.add_argument('--nb_primitives', type=int, default = 125,  help='number of primitives in the atlas')
 parser.add_argument('--super_pts', type=int, default = 2500,  help='number of input pts to pointNet, not used by default')
-parser.add_argument('--env', type=str, default ="existance_prob_delaystart_2D_2",  help='visdom environment')
+parser.add_argument('--env', type=str, default ="test",  help='visdom environment')
 opt = parser.parse_args()
 #-------------------------------------------------------------------------------
 
@@ -82,8 +83,8 @@ len_dataset        = len(dataset)
 lrate              = 1.0
 best_val_loss      = 10
 lr_decay           = 70
-constant_rep_it    = 100
-D3_is_on           = False
+stop_constant_repartitionartition = 150
+with3Dsurface                  = True
 #-------------------------------------------------------------------------------
 
 print('---------- Training information -----------')
@@ -95,14 +96,14 @@ print("Epoch        : ", opt.nepoch)
 print("Primitives   : ", opt.nb_primitives)
 print("points       : ", opt.num_points)
 print("Batch size   : ", opt.batchSize)
-print("3D on        : ", D3_is_on)
+print("3D on        : ", with3Dsurface)
 print('-------------------------------------------\n')
 
 # Creating network
 #-------------------------------------------------------------------------------
 network = AE_AtlasNet(num_points    = opt.num_points,
                       nb_primitives = opt.nb_primitives,
-                      D3_is_on      = D3_is_on)
+                      with3Dsurface      = with3Dsurface)
 network.cuda()
 network.apply(weights_init)
 if opt.model != '':
@@ -118,6 +119,9 @@ train_loss = AverageValueMeter()
 val_loss = AverageValueMeter()
 with open(logname, 'a') as f: #open and append
         f.write(str(network) + '\n')
+
+log_train_loss = []
+log_valid_loss = []
 #-------------------------------------------------------------------------------
 
 
@@ -127,7 +131,7 @@ win_curve = vis.line(X = np.array([0]),Y = np.array([0]),)
 val_curve = vis.line(X = np.array([0]),Y = np.array([1]),)
 #-------------------------------------------------------------------------------
 
-constant_rep = True
+constant_repartition = True
 
 for epoch in range(opt.nepoch):
 
@@ -141,9 +145,12 @@ for epoch in range(opt.nepoch):
             param_group['lr'] = param_group['lr']/2
     #---------------------------------------------------------------------------
 
-    if((epoch%constant_rep_it == 0) and (epoch > 0)):
-        constant_rep = False
+    if stop_constant_repartitionartition == 0:
+        constant_repartition = False
 
+    if((epoch == stop_constant_repartitionartition) and (epoch > 0)):
+        constant_repartition = False
+z
     for i, data in enumerate(dataloader, 0):
 
         optimizer.zero_grad()
@@ -158,7 +165,11 @@ for epoch in range(opt.nepoch):
         #compute prediction
         #-----------------------------------------------------------------------
         config, config_prob, points_per_primitive = network(x=pts,
-                                                 constant_rep=constant_rep)
+                                                 constant_repartition=constant_repartition)
+
+
+        print(config, points_per_primitive)
+        exit(0)
         #-----------------------------------------------------------------------
 
         #compute the loss
@@ -193,6 +204,7 @@ for epoch in range(opt.nepoch):
     #update the loss
     #---------------------------------------------------------------------------
     if train_loss.avg != 0:
+        log_train_loss.append(train_loss.avg)
         vis.updateTrace(
             X = np.array([epoch]),
             Y = np.log(np.array([train_loss.avg])),
@@ -221,7 +233,7 @@ for epoch in range(opt.nepoch):
             #compute prediction
             #-------------------------------------------------------------------
             config, config_prob, points_per_primitive = network(x=pts,
-                                                     constant_rep=constant_rep)
+                                                     constant_repartition=constant_repartition)
             #-------------------------------------------------------------------
 
             #compute the loss
@@ -254,6 +266,7 @@ for epoch in range(opt.nepoch):
     #update the loss
     #---------------------------------------------------------------------------
     if val_loss.avg != 0:
+        log_valid_loss.append(val_loss.avg)
         vis.updateTrace(
             X = np.array([epoch]),
             Y = np.log(np.array([val_loss.avg])),
@@ -261,20 +274,16 @@ for epoch in range(opt.nepoch):
             name = 'Chamfer val')
     #---------------------------------------------------------------------------
 
-    # logging result
-    #---------------------------------------------------------------------------
-    log_table = {
-      "train_loss"   : train_loss.avg,
-      "val_loss"     : val_loss.avg,
-      "epoch"        : epoch,
-      "lr"           : lrate,
-      "super_pts" : opt.super_pts,
-      "bestval"      : best_val_loss,
-    }
     print('\n----------------- Results -----------------')
     for item in dataset_test.cat:
         print(item, dataset_test.perCatValueMeter[item].avg[0])
 
     print('saving net...')
     torch.save(network.state_dict(), '%s/network.pth' % (dir_name))
+
+    with open(dir_name+'/train-loss.pickle','wb') as f:
+        pickle.dump(log_train_loss,f)
+
+    with open(dir_name+'/val-loss.pickle','wb') as f:
+        pickle.dump(log_valid_loss,f)
     #---------------------------------------------------------------------------
